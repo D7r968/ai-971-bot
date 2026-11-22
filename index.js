@@ -12,12 +12,13 @@ const {
 const attachVoice = require('./voice');
 
 const TOKEN = String(process.env.DISCORD_TOKEN || '').trim();
+const BOT_NAME = 'متلازم أول';
 const PROVIDER = String(process.env.AI_PROVIDER || '').toLowerCase() ||
-  (process.env.GEMINI_API_KEY ? 'gemini' : process.env.OPENAI_API_KEY ? 'openai' : 'pollinations');
+  (process.env.GEMINI_API_KEY ? 'gemini' : process.env.OPENAI_API_KEY ? 'openai' : 'kilo');
 
 /* ── خادم الصحة (self-ping 24/7) ── */
 const app = express();
-app.get('/', (_req, res) => res.json({ status: 'ok', bot: '971 AI' }));
+app.get('/', (_req, res) => res.json({ status: 'ok', bot: BOT_NAME }));
 app.get('/health', (_req, res) => res.json({ status: 'ok' }));
 const PORT = Number(process.env.PORT) || 3000;
 app.listen(PORT, () => console.log(`[web] health server on ${PORT}`));
@@ -82,7 +83,8 @@ setInterval(() => refreshContexts().catch(() => {}), 5 * 60 * 1000).unref();
 function systemPrompt(guild) {
   const ctx = guild ? (contextCache.get(guild.id) || buildContext(guild)) : 'ما فيه سيرفر حالياً.';
   return [
-    'أنت «971 AI»، مساعد ذكي وودود داخل سيرفر ديسكورد عربي.',
+    `اسمك الرسمي هو «${BOT_NAME}». إذا سألك أحد «من أنت؟» أو «وش اسمك؟» أو «ما اسمك؟» قل له بالضبط: أنا ${BOT_NAME}.`,
+    'أنت مساعد ذكي وودود داخل سيرفر ديسكورد عربي، وترد على أي سؤال في أي مجال.',
     'أجب بنفس لغة السؤال (العربية غالباً)، وباختصار ووضوح وبدون إطالة.',
     'معلومات السيرفر اللي لازم تعرفها:',
     ctx,
@@ -93,7 +95,41 @@ function systemPrompt(guild) {
   ].join('\n');
 }
 
-/* ── طابور الذكاء الاصطناعي (احترام حد 45 ثانية للخطة المجانية) ── */
+/* ── ردود فورية (بدون حتى استدعاء الذكاء الاصطناعي) ── */
+function quickAnswer(text) {
+  const q = String(text || '').trim();
+  if (/(من أنت|مين انت|مين أنت|وش اسمك|واسمك|ما اسمك|اسمك|who are you|what.?s your name)/i.test(q)) {
+    return `أنا ${BOT_NAME}، مساعد السيرفر الذكي. اسألني أي شي وأرد عليك فوراً.`;
+  }
+  if (/^(السلام عليكم|وعليكم السلام|مرحبا|مرحباً|هاي|أهلا|اهلا|hi|hello|hey)\b/i.test(q)) {
+    return `وعليكم السلام! أنا ${BOT_NAME}، تفضل اسألني أي سؤال.`;
+  }
+  if (/(شكرا|شكراً|thanx|thanks|thank you)/i.test(q)) {
+    return 'العفو! أي شي ثاني أقدر أساعدك فيه؟';
+  }
+  return null;
+}
+
+/* ── مزوّد سريع بلا مفتاح ولا حد انتظار ── */
+async function callKilo(system, question) {
+  const model = String(process.env.KILO_MODEL || 'openrouter/free').trim();
+  const r = await fetch('https://api.kilo.ai/api/gateway/chat/completions', {
+    method: 'POST',
+    headers: { 'Content-Type': 'application/json' },
+    body: JSON.stringify({
+      model,
+      messages: [{ role: 'system', content: system }, { role: 'user', content: question }]
+    }),
+    signal: AbortSignal.timeout(25000)
+  });
+  const j = await r.json().catch(() => ({}));
+  if (!r.ok) throw new Error(j?.error?.message || j?.message || `HTTP ${r.status}`);
+  const out = j.choices?.[0]?.message?.content || '';
+  if (!out.trim()) throw new Error('ما جى رد من مزوّد الذكاء');
+  return out.trim();
+}
+
+/* ── طابور الذكاء الاصطناعي (احترام حد 45 ثانية للخطة المجانية كحل احتياطي) ── */
 let lastCall = 0;
 let chain = Promise.resolve();
 
@@ -167,10 +203,32 @@ async function callOpenAI(system, question) {
 }
 
 async function askAI(guild, question) {
+  const fast = quickAnswer(question);
+  if (fast) return fast;
+
   const system = systemPrompt(guild);
-  if (PROVIDER === 'gemini') return callGemini(system, question);
-  if (PROVIDER === 'openai') return callOpenAI(system, question);
-  return queueAI(() => callPollinations(system, question));
+  if (PROVIDER === 'gemini') {
+    try { return await callGemini(system, question); }
+    catch { return callKilo(system, question); }
+  }
+  if (PROVIDER === 'openai') {
+    try { return await callOpenAI(system, question); }
+    catch { return callKilo(system, question); }
+  }
+  if (PROVIDER === 'pollinations') return queueAI(() => callPollinations(system, question));
+
+  // الوضع الافتراضي: مزوّد سريع، ولو فشل نرجع للخطة المجانية
+  try {
+    return await callKilo(system, question);
+  } catch (err) {
+    console.warn('[i] المزوّد السريع فشل، جرّب الاحتياطي:', err.message);
+    try { return await queueAI(() => callPollinations(system, question)); }
+    catch (err2) {
+      if (process.env.GEMINI_API_KEY) return callGemini(system, question);
+      if (process.env.OPENAI_API_KEY) return callOpenAI(system, question);
+      throw err2;
+    }
+  }
 }
 
 /* ── نية الشراء ── */
@@ -217,6 +275,9 @@ client.once(Events.ClientReady, async (c) => {
   console.log(`[i] السيرفرات: ${c.guilds.cache.size}`);
   for (const g of c.guilds.cache.values()) console.log(`   - ${g.name} (${g.id})`);
   console.log(`[i] مزوّد الذكاء: ${PROVIDER}`);
+  if (c.user.username !== BOT_NAME) {
+    await c.user.setUsername(BOT_NAME).catch((e) => console.warn('[i] ما قدرت أغيّر الاسم:', e.message));
+  }
 
   await voice.restore();
   await refreshContexts();
@@ -228,10 +289,12 @@ client.on(Events.MessageCreate, async (message) => {
 
   const isDM = !message.guild;
   const mentioned = message.mentions.users.has(client.user.id);
+  const repliedToBot = message.reference?.messageAuthorId === client.user.id;
   let question = String(message.content || '').replace(/<@!?\d+>/g, ' ').replace(/\s+/g, ' ').trim();
   const buy = isPurchaseIntent(question);
+  const nameQuestion = /(من أنت|مين انت|مين أنت|وش اسمك|واسمك|ما اسمك|اسمك|who are you|what.?s your name)/i.test(question);
 
-  if (!isDM && !mentioned && !buy) return;
+  if (!isDM && !mentioned && !repliedToBot && !buy && !nameQuestion) return;
   if (!question) question = 'مرحباً، كيف أقدر أساعدك؟';
 
   try {
