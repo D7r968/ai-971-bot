@@ -394,6 +394,32 @@ client.once(Events.ClientReady, async (c) => {
   registerCommands();
 });
 
+/* ── شكر تلقائي على البوست (Server Boost) ── */
+const BOOST_CHANNEL_ID = '1573251981881905343';
+const BOOST_MESSAGE_TYPES = new Set([8, 9, 10, 11]); // UserPremiumGuildSubscription (+Tier1..3)
+
+client.on(Events.MessageCreate, async (message) => {
+  if (!message.guild || message.channel.id !== BOOST_CHANNEL_ID) return;
+  if (!BOOST_MESSAGE_TYPES.has(message.type)) return;
+  const booster = message.author;
+  if (!booster || booster.bot) return;
+  try {
+    const embed = new EmbedBuilder()
+      .setColor(0x5865F2)
+      .setDescription(`شكرا على البوست ي عسل <@${booster.id}> 💙`)
+      .setFooter({ text: BOT_NAME })
+      .setTimestamp();
+    await message.reply({
+      embeds: [embed],
+      allowedMentions: { parse: [], repliedUser: false },
+      failIfNotExists: false
+    });
+    console.log(`[✓] شكر على البوست: ${booster.tag}`);
+  } catch (e) {
+    console.warn('[i] ما قدرت أرد على البوست:', e.message);
+  }
+});
+
 client.on(Events.MessageCreate, async (message) => {
   if (message.author.bot) return;
 
