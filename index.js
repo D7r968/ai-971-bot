@@ -7,7 +7,12 @@ const {
   GatewayIntentBits,
   Events,
   SlashCommandBuilder,
-  PermissionFlagsBits
+  PermissionFlagsBits,
+  EmbedBuilder,
+  ActionRowBuilder,
+  ButtonBuilder,
+  ButtonStyle,
+  ChannelType
 } = require('discord.js');
 const attachVoice = require('./voice');
 
@@ -255,12 +260,117 @@ const askCommand = new SlashCommandBuilder()
   .addStringOption((o) => o.setName('question').setDescription('سؤالك').setRequired(true))
   .toJSON();
 
+/* ── أمر النشر: البوت يرسل عنك أي شي لأي روم ── */
+const sendCommand = new SlashCommandBuilder()
+  .setName('send')
+  .setDescription('البوت يرسل رسالتك لأي روم — نصوص وصور ومنشنات وإمbed')
+  .setDefaultMemberPermissions(PermissionFlagsBits.Administrator)
+  .addChannelOption((o) => o.setName('channel').setDescription('الروم اللي بيوصل فيه الشي').setRequired(true)
+    .addChannelTypes(ChannelType.GuildText, ChannelType.GuildAnnouncement, ChannelType.PublicThread, ChannelType.PrivateThread))
+  .addStringOption((o) => o.setName('message').setDescription('النص اللي تبي البوت يكتبه (اتركه فاضي إذا صور بس)').setRequired(false))
+  .addAttachmentOption((o) => o.setName('file1').setDescription('صورة أو ملف أول').setRequired(false))
+  .addAttachmentOption((o) => o.setName('file2').setDescription('صورة أو ملف ثاني').setRequired(false))
+  .addAttachmentOption((o) => o.setName('file3').setDescription('صورة أو ملف ثالث').setRequired(false))
+  .addBooleanOption((o) => o.setName('embed').setDescription('true = إرسال كإمbed منسق، false = رسالة عادية').setRequired(false))
+  .addStringOption((o) => o.setName('title').setDescription('عنوان الإمbed').setRequired(false))
+  .addStringOption((o) => o.setName('description').setDescription('وصف الإمbed').setRequired(false))
+  .addStringOption((o) => o.setName('color').setDescription('لون الإمbed مثال #DC143C').setRequired(false))
+  .addStringOption((o) => o.setName('image_url').setDescription('رابط صورة تظهر داخل الإمbed').setRequired(false))
+  .addStringOption((o) => o.setName('footer').setDescription('نص سفلي للإمbed').setRequired(false))
+  .addBooleanOption((o) => o.setName('everyone').setDescription('true = منشن @everyone').setRequired(false))
+  .addBooleanOption((o) => o.setName('here').setDescription('true = منشن @here').setRequired(false))
+  .addRoleOption((o) => o.setName('role').setDescription('رتبة تبيها تمنشن مع الرسالة').setRequired(false))
+  .addUserOption((o) => o.setName('user').setDescription('شخص تبيه يمنشن مع الرسالة').setRequired(false))
+  .addStringOption((o) => o.setName('button_label').setDescription('نص زر رابط يظهر تحت الرسالة').setRequired(false))
+  .addStringOption((o) => o.setName('button_url').setDescription('رابط الزر (لازم يبدأ https://)').setRequired(false))
+  .toJSON();
+
+function parseColor(input) {
+  if (!input) return undefined;
+  const s = String(input).trim().replace(/^#/, '');
+  return /^[0-9a-fA-F]{6}$/.test(s) ? parseInt(s, 16) : undefined;
+}
+
+async function handleSend(interaction) {
+  const member = interaction.member;
+  const allowed = member?.permissions?.has?.(PermissionFlagsBits.Administrator) ||
+    member?.permissions?.has?.(PermissionFlagsBits.ManageMessages) ||
+    interaction.user.id === interaction.guild?.ownerId;
+  if (!allowed) {
+    return interaction.reply({ content: '❌ هذا الأمر للأدمن فقط.', flags: 64 });
+  }
+
+  const channel = interaction.options.getChannel('channel', true);
+  if (!channel?.isTextBased()) {
+    return interaction.reply({ content: '❌ الروم المحدد ما ينقبل فيه إرسال.', flags: 64 });
+  }
+
+  const text = interaction.options.getString('message') || '';
+  const role = interaction.options.getRole('role');
+  const user = interaction.options.getUser('user');
+  const everyone = interaction.options.getBoolean('everyone');
+  const here = interaction.options.getBoolean('here');
+  const asEmbed = interaction.options.getBoolean('embed');
+
+  let content = text;
+  if (everyone) content += (content ? '\n' : '') + '@everyone';
+  if (here) content += (content ? '\n' : '') + '@here';
+  if (role) content += (content ? '\n' : '') + `<@&${role.id}>`;
+  if (user) content += (content ? '\n' : '') + `<@${user.id}>`;
+
+  const files = [];
+  for (const key of ['file1', 'file2', 'file3']) {
+    const att = interaction.options.getAttachment(key);
+    if (att) files.push(att.url);
+  }
+
+  const payload = {
+    allowedMentions: { parse: ['users', 'roles', 'everyone'] }
+  };
+  if (content.trim()) payload.content = content.slice(0, 1900);
+  if (files.length) payload.files = files;
+
+  const title = interaction.options.getString('title');
+  const description = interaction.options.getString('description');
+  const imageUrl = interaction.options.getString('image_url');
+  const footer = interaction.options.getString('footer');
+  if (asEmbed || title || description || imageUrl || footer) {
+    const embed = new EmbedBuilder()
+      .setColor(parseColor(interaction.options.getString('color')) || 0xDC143C)
+      .setTimestamp();
+    if (title) embed.setTitle(title.slice(0, 256));
+    if (description) embed.setDescription(description.slice(0, 4000));
+    if (imageUrl && /^https?:\/\//i.test(imageUrl)) embed.setImage(imageUrl);
+    if (footer) embed.setFooter({ text: footer.slice(0, 2048) });
+    payload.embeds = [embed];
+  }
+
+  const label = interaction.options.getString('button_label');
+  const url = interaction.options.getString('button_url');
+  if (label && url && /^https?:\/\//i.test(url)) {
+    payload.components = [
+      new ActionRowBuilder().addComponents(new ButtonBuilder().setLabel(label.slice(0, 80)).setStyle(ButtonStyle.Link).setURL(url))
+    ];
+  }
+
+  try {
+    const sent = await channel.send(payload);
+    return interaction.reply({
+      content: `✅ أرسلت الرسالة في <#${channel.id}> — [افتحها](https://discord.com/channels/${interaction.guild.id}/${channel.id}/${sent.id})`,
+      flags: 64
+    });
+  } catch (err) {
+    console.error('[!] فشل النشر:', err.message);
+    return interaction.reply({ content: '❌ ما قدرت أرسل — تأكد إن البوت عنده صلاحية إرسال وقراءة في الروم: ' + err.message, flags: 64 });
+  }
+}
+
 async function registerCommands() {
   if (!client.user) return;
-  const all = [...voice.commands(), askCommand];
+  const all = [...voice.commands(), askCommand, sendCommand];
   try {
     await client.application.commands.set(all);
-    console.log('[✓] تم تسجيل أوامر /ask و /join و /leave و /status عالمياً');
+    console.log('[✓] تم تسجيل أوامر /ask و /send و /join و /leave و /status عالمياً');
     for (const g of client.guilds.cache.values()) {
       await g.commands.set(all).catch(() => {});
     }
@@ -323,6 +433,7 @@ client.on(Events.InteractionCreate, async (interaction) => {
   try {
     if (await voice.handle(interaction)) return;
     if (!interaction.isChatInputCommand()) return;
+    if (interaction.commandName === 'send') return handleSend(interaction);
     if (interaction.commandName === 'ask') {
       const q = interaction.options.getString('question', true);
       await interaction.deferReply();
