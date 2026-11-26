@@ -426,12 +426,13 @@ function cloneHelpMessage() {
       '1) حط توكن حسابك في خانة **Account Token**.\n' +
       '2) في **Server ID To Copy** حط آيدي السيرفر المصدر.\n' +
       '3) في **Server ID To Paste** حط آيدي السيرفر الهدف.\n' +
-      '4) في **Clone Emojis & Stickers?** اكتب `نعم` إذا تبي الإيموجيات والملصقات، أو اتركها فاضية للنسخ السريع.\n\n' +
+      '4) **Clone Emojis & Stickers?** اكتب `لا` إذا ما تبيهم، غير كذا (أو فاضية) يننسخوا مع كل شي.\n\n' +
       '🔹 الآيدي = الرقم الطويل للسيرفر (من رابط الدعوة أو إعدادات السيرفر).\n' +
-      '🔹 لازم تكون داخل السيرفرين، وما تحتاج أي رتبة عند هذا البوت.\n' +
-      '🔹 التوكن ما ينحفظ ولا يظهر لأحد — يستعمل بس وقت النسخ.\n' +
+      '🔹 لازم تكون داخل السيرفرين.\n' +
+      '🔹 يننسخ: الرتب وصلاحياتها وأيقوناتها، الكاتاغوريات والرومات وصلاحياتها، الإيموجيات والملصقات، واسم السيرفر ووصفه وأيقونته.\n' +
+      '🔹 الأفضل تستعمل **توكن بوت** أدمن في السيرفرين؛ توكن الحساب مخالف لشروط ديسكورد وقد يوقف الحساب. التوكن ما ينحفظ ولا يظهر في أي رد.\n' +
       '🔹 بين كل طلب وثاني 10 دقائق (ما يمدي تسوي سبام).\n' +
-      '🔹 إذا ما عندك صلاحية إنشاء رومات/رتب في الهدف، بينظهر لك تنبيه باللي ما اننسخ.'
+      '🔹 إذا ما عندك صلاحية شي في الهدف، بينظهر لك تنبيه باللي ما اننسخ.'
     )
     .setFooter({ text: BOT_NAME });
   return { embeds: [embed], flags: 64 };
@@ -452,7 +453,7 @@ function cloneModal() {
       new ActionRowBuilder().addComponents(input('clone_token', 'Account Token', 'حط توكن حسابك')),
       new ActionRowBuilder().addComponents(input('clone_src', 'Server ID To Copy', 'مثال: 1546676470053601462')),
       new ActionRowBuilder().addComponents(input('clone_dst', 'Server ID To Paste', 'مثال: 123456789012345678')),
-      new ActionRowBuilder().addComponents(input('clone_es', 'Clone Emojis & Stickers? (نعم/لا)', 'نعم أو فاضي للنسخ السريع'))
+      new ActionRowBuilder().addComponents(input('clone_es', 'Clone Emojis & Stickers? (نعم/لا)', 'فاضي = نسخ كل شي | لا = تخطي الإيموجيات'))
     );
 }
 
@@ -476,20 +477,29 @@ async function apiCall(auth, method, path, payload, rawBody) {
   } else if (rawBody !== undefined) {
     body = rawBody;
   }
-  const r = await fetch(DISCORD_API + path, { method, headers, body });
-  const txt = await r.text();
-  if (!r.ok) {
+  // احترام الـ rate limit عشان ما يطلق التوكن بلاغ/تقييد بسبب كثرة الطلبات
+  for (let attempt = 0; attempt < 6; attempt++) {
+    const r = await fetch(DISCORD_API + path, { method, headers, body });
+    const txt = await r.text();
+    if (r.ok) {
+      if (r.status === 204 || !txt) return null;
+      try { return JSON.parse(txt); } catch { return txt; }
+    }
+    let j = null;
+    try { j = JSON.parse(txt); } catch { /* نص عادي */ }
+    if ((r.status === 429 || r.status >= 500) && attempt < 5) {
+      const wait = Math.min(5000, Math.max(400, Math.ceil(Number(j?.retry_after || 0.5) * 1000)));
+      await sleep(wait);
+      continue;
+    }
     let msg = `HTTP ${r.status}`;
-    try {
-      const j = JSON.parse(txt);
-      msg = j.message || JSON.stringify(j.errors || j) || msg;
-    } catch { msg = txt.slice(0, 180) || msg; }
+    try { msg = j?.message || JSON.stringify(j?.errors || j) || msg; }
+    catch { msg = txt.slice(0, 180) || msg; }
     const err = new Error(String(msg).slice(0, 220));
     err.status = r.status;
     throw err;
   }
-  if (r.status === 204 || !txt) return null;
-  try { return JSON.parse(txt); } catch { return txt; }
+  throw new Error('HTTP 429 (تجاوز حد الطلبات)');
 }
 
 async function cloneServer(token, srcId, dstId, copyExtras) {
@@ -501,7 +511,10 @@ async function cloneServer(token, srcId, dstId, copyExtras) {
   if (!ids.has(srcId)) throw new Error('لازم تكون داخل السيرفر المصدر (Server ID To Copy).');
   if (!ids.has(dstId)) throw new Error('لازم تكون داخل السيرفر الهدف (Server ID To Paste).');
 
-  const result = { roles: 0, categories: 0, channels: 0, emojis: 0, stickers: 0, errors: note, me: me.username };
+  const result = {
+    roles: 0, categories: 0, channels: 0, overwrites: 0, emojis: 0, stickers: 0,
+    guild: 0, errors: note, me: me.username
+  };
 
   // الرتب أولاً عشان نربطها بالإيموجيات
   let roleMap = new Map();
@@ -517,6 +530,23 @@ async function cloneServer(token, srcId, dstId, copyExtras) {
         roleMap.set(r.id, made.id);
         result.roles++;
         await sleep(120);
+        // الأيقونة والترتيب (أي和地方ية)
+        if (r.icon || r.position !== undefined) {
+          try {
+            const patch = {};
+            if (r.position !== undefined) patch.position = r.position;
+            if (r.icon) {
+              const ext = r.icon.startsWith('a_') ? 'gif' : 'png';
+              const img = await fetch(`https://cdn.discordapp.com/role-icons/${r.id}/${r.icon}.${ext}?size=128`);
+              if (img.ok) {
+                patch.icon = `data:image/${ext};base64,${Buffer.from(await img.arrayBuffer()).toString('base64')}`;
+              }
+            }
+            if (Object.keys(patch).length) {
+              await apiCall(auth, 'PATCH', `/guilds/${dstId}/roles/${made.id}`, patch);
+            }
+          } catch { /* الرتبة اننسخت، التأكيدات اختيارية */ }
+        }
       } catch (e) { note.push(`رتبة ${r.name}: ${e.message}`); }
     }
   } catch (e) { note.push(`الرتب: ${e.message}`); }
@@ -537,23 +567,57 @@ async function cloneServer(token, srcId, dstId, copyExtras) {
       } catch (e) { note.push(`كاتاغوري ${c.name}: ${e.message}`); }
     }
     for (const c of chans || []) {
-      if (c.type === 4 || [11, 12].includes(c.type)) continue; // الرومات الفرعية/الثريدز ما تننسخ مباشرة
+      if (c.type === 4 || [11, 12].includes(c.type)) continue; // الثريدز ما تننسخ مباشرة
       const payload = { name: c.name, type: c.type, position: c.position || 0 };
       if (c.parent_id && catMap.has(c.parent_id)) payload.parent_id = catMap.get(c.parent_id);
       if ([0, 5, 15].includes(c.type)) {
         if (c.topic) payload.topic = String(c.topic).slice(0, 4096);
         if (c.nsfw) payload.nsfw = true;
         if (c.rate_limit_per_user) payload.rate_limit_per_user = c.rate_limit_per_user;
+        if (c.default_auto_archive_duration) payload.default_auto_archive_duration = c.default_auto_archive_duration;
       }
       if ([2, 13].includes(c.type)) {
         if (c.bitrate) payload.bitrate = c.bitrate;
         if (c.user_limit !== undefined) payload.user_limit = c.user_limit;
+        if (c.video_quality_mode) payload.video_quality_mode = c.video_quality_mode;
+        if (c.rtc_region) payload.rtc_region = c.rtc_region;
       }
+      if (c.type === 15) {
+        if (Array.isArray(c.available_tags)) {
+          payload.available_tags = c.available_tags.map((t) => ({
+            name: String(t.name || '').slice(0, 100),
+            emoji_id: t.emoji_id || undefined,
+            emoji_name: t.emoji_name || undefined,
+            moderated: !!t.moderated
+          }));
+        }
+        if (c.default_reaction_emoji?.emoji_name) payload.default_reaction_emoji = { emoji_name: c.default_reaction_emoji.emoji_name };
+        if (c.default_sort_order !== undefined) payload.default_sort_order = c.default_sort_order;
+        if (c.default_forum_layout !== undefined) payload.default_forum_layout = c.default_forum_layout;
+      }
+      let made;
       try {
-        await apiCall(auth, 'POST', `/guilds/${dstId}/channels`, payload);
+        made = await apiCall(auth, 'POST', `/guilds/${dstId}/channels`, payload);
         result.channels++;
         await sleep(120);
-      } catch (e) { note.push(`روم ${c.name}: ${e.message}`); }
+      } catch (e) { note.push(`روم ${c.name}: ${e.message}`); continue; }
+
+      // صلاحيات الروم (Overwrites) — للأدمن والرتب اللي اننسخت
+      const ows = [];
+      for (const o of c.permission_overwrites || []) {
+        if (o.type === 0 || o.id === srcId) {
+          ows.push({ id: dstId, type: 0, allow: String(o.allow || '0'), deny: String(o.deny || '0') });
+        } else if (o.type === 1 && roleMap.has(o.id)) {
+          ows.push({ id: roleMap.get(o.id), type: 1, allow: String(o.allow || '0'), deny: String(o.deny || '0') });
+        }
+      }
+      if (ows.length) {
+        try {
+          await apiCall(auth, 'PATCH', `/channels/${made.id}`, { permission_overwrites: ows });
+          result.overwrites += ows.length;
+          await sleep(100);
+        } catch { /* نتجاهل تعارض الصلاحيات */ }
+      }
     }
   } catch (e) { note.push(`الرومات: ${e.message}`); }
 
@@ -601,6 +665,27 @@ async function cloneServer(token, srcId, dstId, copyExtras) {
       }
     } catch (e) { note.push(`الملصقات: ${e.message}`); }
   }
+
+  // اسم السيرفر ووصفه وأيقونته وبانره
+  try {
+    const sg = await apiCall(auth, 'GET', `/guilds/${srcId}`);
+    const patch = {};
+    if (sg.name) patch.name = String(sg.name).slice(0, 100);
+    if (sg.description) patch.description = String(sg.description).slice(0, 4000);
+    if (sg.preferred_locale) patch.preferred_locale = sg.preferred_locale;
+    for (const key of ['icon', 'banner']) {
+      if (!sg[key]) continue;
+      const ext = sg[key].startsWith('a_') ? 'gif' : 'png';
+      const size = key === 'icon' ? 512 : 1024;
+      const img = await fetch(`https://cdn.discordapp.com/${key === 'icon' ? 'icons' : 'banners'}/${srcId}/${sg[key]}.${ext}?size=${size}`);
+      if (img.ok) patch[key] = `data:image/${ext};base64,${Buffer.from(await img.arrayBuffer()).toString('base64')}`;
+    }
+    if (Object.keys(patch).length) {
+      await apiCall(auth, 'PATCH', `/guilds/${dstId}`, patch);
+      result.guild++;
+      await sleep(120);
+    }
+  } catch (e) { note.push(`إعدادات السيرفر: ${e.message}`); }
 
   return result;
 }
@@ -781,7 +866,8 @@ client.on(Events.InteractionCreate, async (interaction) => {
       const srcId = interaction.fields.getTextInputValue('clone_src').trim();
       const dstId = interaction.fields.getTextInputValue('clone_dst').trim();
       const es = interaction.fields.getTextInputValue('clone_es').trim();
-      const copyExtras = /^(نعم|yes|y|1|true)$/i.test(es);
+      // الافتراضي = نسخ كل شي؛ فقط كلمة «لا» تخطي الإيموجيات والملصقات
+      const copyExtras = !/^(لا|no|n|0|false)$/i.test(es);
 
       if (!/^\d{15,25}$/.test(srcId) || !/^\d{15,25}$/.test(dstId)) {
         return interaction.editReply({ content: '❌ الآيدي لازم يكون رقم طويل (15-25 رقم).' });
@@ -800,7 +886,9 @@ client.on(Events.InteractionCreate, async (interaction) => {
             `الحساب: ${res.me}`,
             `📁 كاتاغوريات: ${res.categories}`,
             `💬 رومات: ${res.channels}`,
+            `🔒 صلاحيات رومات: ${res.overwrites}`,
             `🎭 رتب: ${res.roles}`,
+            `🖼️ إعدادات السيرفر: ${res.guild}`,
             `😀 إيموجيات: ${res.emojis}`,
             `🏷️ ملصقات: ${res.stickers}`,
             '',
