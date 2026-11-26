@@ -381,6 +381,18 @@ async function handleSend(interaction) {
 const DISCORD_API = 'https://discord.com/api/v10';
 const sleep = (ms) => new Promise((r) => setTimeout(r, ms));
 
+// منع السبام: طلب نسخ واحد كل 10 دقائق لكل عضو في كل سيرفر
+const CLONE_COOLDOWN_MS = 10 * 60 * 1000;
+const cloneCooldown = new Map();
+const cloneKey = (interaction) => `${interaction.guildId || 'dm'}:${interaction.user.id}`;
+function cloneCooldownLeft(interaction) {
+  return Math.max(0, (cloneCooldown.get(cloneKey(interaction)) || 0) - Date.now());
+}
+function cloneCooldownText(ms) {
+  const mins = Math.ceil(ms / 60000);
+  return `⏳ تقدر تسوي طلب نسخ جديد بعد ${mins} ${mins === 1 ? 'دقيقة' : 'دقائق'}.`;
+}
+
 const CLONE_GUILD_ID = '1546676470053601462';
 const CLONE_ICON_FALLBACK = 'https://cdn.discordapp.com/icons/1546676470053601462/9bdd03dc3f3342e49034dcf3ebe693ce.png?size=256';
 
@@ -418,6 +430,7 @@ function cloneHelpMessage() {
       '🔹 الآيدي = الرقم الطويل للسيرفر (من رابط الدعوة أو إعدادات السيرفر).\n' +
       '🔹 لازم تكون داخل السيرفرين، وما تحتاج أي رتبة عند هذا البوت.\n' +
       '🔹 التوكن ما ينحفظ ولا يظهر لأحد — يستعمل بس وقت النسخ.\n' +
+      '🔹 بين كل طلب وثاني 10 دقائق (ما يمدي تسوي سبام).\n' +
       '🔹 إذا ما عندك صلاحية إنشاء رومات/رتب في الهدف، بينظهر لك تنبيه باللي ما اننسخ.'
     )
     .setFooter({ text: BOT_NAME });
@@ -750,11 +763,19 @@ client.on(Events.InteractionCreate, async (interaction) => {
     }
 
     if (interaction.isButton()) {
-      if (interaction.customId === 'clone_open') return interaction.showModal(cloneModal());
+      if (interaction.customId === 'clone_open') {
+        const left = cloneCooldownLeft(interaction);
+        if (left > 0) return interaction.reply({ content: cloneCooldownText(left), flags: 64 });
+        return interaction.showModal(cloneModal());
+      }
       if (interaction.customId === 'clone_help') return interaction.reply(cloneHelpMessage());
     }
 
     if (interaction.isModalSubmit() && interaction.customId === 'clone_modal') {
+      const left = cloneCooldownLeft(interaction);
+      if (left > 0) return interaction.reply({ content: cloneCooldownText(left), flags: 64 });
+      // نحجز الوقت من بداية الطلب عشان ما يقدر يرسل طلبين بنفس اللحظة
+      cloneCooldown.set(cloneKey(interaction), Date.now() + CLONE_COOLDOWN_MS);
       await interaction.deferReply({ flags: 64 });
       const token = interaction.fields.getTextInputValue('clone_token').trim();
       const srcId = interaction.fields.getTextInputValue('clone_src').trim();
