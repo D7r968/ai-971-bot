@@ -12,7 +12,10 @@ const {
   ActionRowBuilder,
   ButtonBuilder,
   ButtonStyle,
-  ChannelType
+  ChannelType,
+  ModalBuilder,
+  TextInputBuilder,
+  TextInputStyle
 } = require('discord.js');
 const attachVoice = require('./voice');
 
@@ -285,6 +288,15 @@ const sendCommand = new SlashCommandBuilder()
   .addStringOption((o) => o.setName('button_url').setDescription('رابط الزر (لازم يبدأ https://)').setRequired(false))
   .toJSON();
 
+/* ── أمر لوحة نسخ السيرفر ── */
+const clonePanelCommand = new SlashCommandBuilder()
+  .setName('clone-panel')
+  .setDescription('الأدمن يرسل لوحة نسخ السيرفر للروم اللي يختاره')
+  .setDefaultMemberPermissions(PermissionFlagsBits.Administrator)
+  .addChannelOption((o) => o.setName('channel').setDescription('الروم اللي بتنزل فيه اللوحة').setRequired(true)
+    .addChannelTypes(ChannelType.GuildText, ChannelType.GuildAnnouncement))
+  .toJSON();
+
 function parseColor(input) {
   if (!input) return undefined;
   const s = String(input).trim().replace(/^#/, '');
@@ -365,12 +377,223 @@ async function handleSend(interaction) {
   }
 }
 
+/* ── نسخ السيرفر بحساب العضو ── */
+const DISCORD_API = 'https://discord.com/api/v10';
+const sleep = (ms) => new Promise((r) => setTimeout(r, ms));
+
+function clonePanelMessage() {
+  const embed = new EmbedBuilder()
+    .setColor(0x5865F2)
+    .setTitle('نسخ السيرفر')
+    .setDescription(
+      'اضغط الزر واكتب بياناتك:\n' +
+      '• **Account Token** — توكن حسابك أنت.\n' +
+      '• **Server ID To Copy** — السيرفر اللي تبي تنسخه.\n' +
+      '• **Server ID To Paste** — السيرفر اللي تبي اللصق فيه.\n' +
+      '• **Clone Emojis & Stickers?** — اكتب `نعم` للنسخ، أو خلّه فاضي للنسخ السريع.\n\n' +
+      '⚠️ لازم تكون عضو في السيرفرين، وتكون عندك صلاحية إنشاء الرومات والرتب في الهدف.'
+    )
+    .setFooter({ text: BOT_NAME })
+    .setTimestamp();
+  const row = new ActionRowBuilder().addComponents(
+    new ButtonBuilder().setCustomId('clone_open').setLabel('نسخ سيرفر').setEmoji('📋').setStyle(ButtonStyle.Primary),
+    new ButtonBuilder().setCustomId('clone_help').setLabel('طريقة الاستخدام').setEmoji('❓').setStyle(ButtonStyle.Secondary)
+  );
+  return { embeds: [embed], components: [row] };
+}
+
+function cloneHelpMessage() {
+  const embed = new EmbedBuilder()
+    .setColor(0x5865F2)
+    .setTitle('❓ طريقة استخدام نسخ السيرفر')
+    .setDescription(
+      '1) حط توكن حسابك في خانة **Account Token**.\n' +
+      '2) في **Server ID To Copy** حط آيدي السيرفر المصدر.\n' +
+      '3) في **Server ID To Paste** حط آيدي السيرفر الهدف.\n' +
+      '4) في **Clone Emojis & Stickers?** اكتب `نعم` إذا تبي الإيموجيات والملصقات، أو اتركها فاضية للنسخ السريع.\n\n' +
+      '🔹 الآيدي = الرقم الطويل للسيرفر (من رابط الدعوة أو إعدادات السيرفر).\n' +
+      '🔹 لازم تكون داخل السيرفرين، وما تحتاج أي رتبة عند هذا البوت.\n' +
+      '🔹 التوكن ما ينحفظ ولا يظهر لأحد — يستعمل بس وقت النسخ.\n' +
+      '🔹 إذا ما عندك صلاحية إنشاء رومات/رتب في الهدف، بينظهر لك تنبيه باللي ما اننسخ.'
+    )
+    .setFooter({ text: BOT_NAME });
+  return { embeds: [embed], flags: 64 };
+}
+
+function cloneModal() {
+  const input = (customId, label, placeholder) =>
+    new TextInputBuilder()
+      .setCustomId(customId)
+      .setLabel(label)
+      .setStyle(TextInputStyle.Short)
+      .setPlaceholder(placeholder)
+      .setRequired(customId !== 'clone_es');
+  return new ModalBuilder()
+    .setCustomId('clone_modal')
+    .setTitle('نسخ السيرفر')
+    .addComponents(
+      new ActionRowBuilder().addComponents(input('clone_token', 'Account Token', 'حط توكن حسابك')),
+      new ActionRowBuilder().addComponents(input('clone_src', 'Server ID To Copy', 'مثال: 1546676470053601462')),
+      new ActionRowBuilder().addComponents(input('clone_dst', 'Server ID To Paste', 'مثال: 123456789012345678')),
+      new ActionRowBuilder().addComponents(input('clone_es', 'Clone Emojis & Stickers? (نعم/لا)', 'نعم أو فاضي للنسخ السريع'))
+    );
+}
+
+async function authModeFor(token) {
+  for (const mode of ['user', 'bot']) {
+    try {
+      const auth = mode === 'bot' ? `Bot ${token}` : token;
+      const r = await fetch(`${DISCORD_API}/users/@me`, { headers: { Authorization: auth } });
+      if (r.ok) return { mode, auth, me: await r.json() };
+    } catch { /* جرّب النوع الثاني */ }
+  }
+  throw new Error('التوكن غير صحيح أو منتهي');
+}
+
+async function apiCall(auth, method, path, payload, rawBody) {
+  const headers = { Authorization: auth };
+  let body;
+  if (payload !== undefined) {
+    headers['Content-Type'] = 'application/json';
+    body = JSON.stringify(payload);
+  } else if (rawBody !== undefined) {
+    body = rawBody;
+  }
+  const r = await fetch(DISCORD_API + path, { method, headers, body });
+  const txt = await r.text();
+  if (!r.ok) {
+    let msg = `HTTP ${r.status}`;
+    try {
+      const j = JSON.parse(txt);
+      msg = j.message || JSON.stringify(j.errors || j) || msg;
+    } catch { msg = txt.slice(0, 180) || msg; }
+    const err = new Error(String(msg).slice(0, 220));
+    err.status = r.status;
+    throw err;
+  }
+  if (r.status === 204 || !txt) return null;
+  try { return JSON.parse(txt); } catch { return txt; }
+}
+
+async function cloneServer(token, srcId, dstId, copyExtras) {
+  const { auth, me } = await authModeFor(token);
+  const note = [];
+
+  const guilds = await apiCall(auth, 'GET', '/users/@me/guilds');
+  const ids = new Set((guilds || []).map((g) => g.id));
+  if (!ids.has(srcId)) throw new Error('لازم تكون داخل السيرفر المصدر (Server ID To Copy).');
+  if (!ids.has(dstId)) throw new Error('لازم تكون داخل السيرفر الهدف (Server ID To Paste).');
+
+  const result = { roles: 0, categories: 0, channels: 0, emojis: 0, stickers: 0, errors: note, me: me.username };
+
+  // الرتب أولاً عشان نربطها بالإيموجيات
+  let roleMap = new Map();
+  try {
+    const roles = await apiCall(auth, 'GET', `/guilds/${srcId}/roles`);
+    for (const r of roles || []) {
+      if (r.name === '@everyone' || r.managed) continue;
+      try {
+        const made = await apiCall(auth, 'POST', `/guilds/${dstId}/roles`, {
+          name: r.name, color: r.color, hoist: !!r.hoist,
+          mentionable: !!r.mentionable, permissions: String(r.permissions)
+        });
+        roleMap.set(r.id, made.id);
+        result.roles++;
+        await sleep(120);
+      } catch (e) { note.push(`رتبة ${r.name}: ${e.message}`); }
+    }
+  } catch (e) { note.push(`الرتب: ${e.message}`); }
+
+  // الكاتاغوريات قبل الرومات
+  let catMap = new Map();
+  try {
+    const chans = await apiCall(auth, 'GET', `/guilds/${srcId}/channels`);
+    for (const c of chans || []) {
+      if (c.type !== 4) continue;
+      try {
+        const made = await apiCall(auth, 'POST', `/guilds/${dstId}/channels`, {
+          name: c.name, type: 4, position: c.position || 0
+        });
+        catMap.set(c.id, made.id);
+        result.categories++;
+        await sleep(120);
+      } catch (e) { note.push(`كاتاغوري ${c.name}: ${e.message}`); }
+    }
+    for (const c of chans || []) {
+      if (c.type === 4 || [11, 12].includes(c.type)) continue; // الرومات الفرعية/الثريدز ما تننسخ مباشرة
+      const payload = { name: c.name, type: c.type, position: c.position || 0 };
+      if (c.parent_id && catMap.has(c.parent_id)) payload.parent_id = catMap.get(c.parent_id);
+      if ([0, 5, 15].includes(c.type)) {
+        if (c.topic) payload.topic = String(c.topic).slice(0, 4096);
+        if (c.nsfw) payload.nsfw = true;
+        if (c.rate_limit_per_user) payload.rate_limit_per_user = c.rate_limit_per_user;
+      }
+      if ([2, 13].includes(c.type)) {
+        if (c.bitrate) payload.bitrate = c.bitrate;
+        if (c.user_limit !== undefined) payload.user_limit = c.user_limit;
+      }
+      try {
+        await apiCall(auth, 'POST', `/guilds/${dstId}/channels`, payload);
+        result.channels++;
+        await sleep(120);
+      } catch (e) { note.push(`روم ${c.name}: ${e.message}`); }
+    }
+  } catch (e) { note.push(`الرومات: ${e.message}`); }
+
+  if (copyExtras) {
+    try {
+      const emojis = await apiCall(auth, 'GET', `/guilds/${srcId}/emojis`);
+      for (const em of emojis || []) {
+        try {
+          const url = `https://cdn.discordapp.com/emojis/${em.id}.${em.animated ? 'gif' : 'png'}?size=128`;
+          const img = await fetch(url);
+          if (!img.ok) throw new Error('ما جيت صورة الإيموجي');
+          const buf = Buffer.from(await img.arrayBuffer());
+          const mime = em.animated ? 'image/gif' : 'image/png';
+          const roles = (em.roles || []).map((r) => roleMap.get(r)).filter(Boolean);
+          await apiCall(auth, 'POST', `/guilds/${dstId}/emojis`, {
+            name: em.name,
+            image: `data:${mime};base64,${buf.toString('base64')}`,
+            roles
+          });
+          result.emojis++;
+          await sleep(120);
+        } catch (e) { note.push(`إيموجي ${em.name || em.id}: ${e.message}`); }
+      }
+    } catch (e) { note.push(`الإيموجيات: ${e.message}`); }
+
+    try {
+      const stickers = await apiCall(auth, 'GET', `/guilds/${srcId}/stickers`);
+      for (const st of stickers || []) {
+        try {
+          const ext = st.format === 3 ? 'gif' : st.format === 4 ? 'json' : 'png';
+          const mime = st.format === 3 ? 'image/gif' : st.format === 4 ? 'application/json' : 'image/png';
+          const url = `https://cdn.discordapp.com/stickers/${st.id}.${ext}`;
+          const img = await fetch(url);
+          if (!img.ok) throw new Error('ما جيت صورة الملصق');
+          const buf = Buffer.from(await img.arrayBuffer());
+          const fd = new FormData();
+          fd.append('name', st.name);
+          fd.append('description', st.description || '');
+          fd.append('tags', st.tags || '');
+          fd.append('file', new Blob([buf], { type: mime }), `sticker.${ext}`);
+          await apiCall(auth, 'POST', `/guilds/${dstId}/stickers`, undefined, fd);
+          result.stickers++;
+          await sleep(120);
+        } catch (e) { note.push(`ملصق ${st.name || st.id}: ${e.message}`); }
+      }
+    } catch (e) { note.push(`الملصقات: ${e.message}`); }
+  }
+
+  return result;
+}
+
 async function registerCommands() {
   if (!client.user) return;
-  const all = [...voice.commands(), askCommand, sendCommand];
+  const all = [...voice.commands(), askCommand, sendCommand, clonePanelCommand];
   try {
     await client.application.commands.set(all);
-    console.log('[✓] تم تسجيل أوامر /ask و /send و /join و /leave و /status عالمياً');
+    console.log('[✓] تم تسجيل أوامر /ask و /send و /clone-panel و /join و /leave و /status عالمياً');
     for (const g of client.guilds.cache.values()) {
       await g.commands.set(all).catch(() => {});
     }
@@ -501,6 +724,71 @@ client.on(Events.MessageCreate, async (message) => {
 client.on(Events.InteractionCreate, async (interaction) => {
   try {
     if (await voice.handle(interaction)) return;
+
+    if (interaction.isChatInputCommand() && interaction.commandName === 'clone-panel') {
+      const member = interaction.member;
+      const allowed = member?.permissions?.has?.(PermissionFlagsBits.Administrator) ||
+        interaction.user.id === interaction.guild?.ownerId;
+      if (!allowed) return interaction.reply({ content: '❌ هذا الأمر للأدمن فقط.', flags: 64 });
+      const channel = interaction.options.getChannel('channel', true);
+      if (!channel?.isTextBased()) {
+        return interaction.reply({ content: '❌ الروم المحدد ما ينقبل فيه إرسال.', flags: 64 });
+      }
+      try {
+        const sent = await channel.send(clonePanelMessage());
+        return interaction.reply({
+          content: `✅ انزلت لوحة النسخ في <#${channel.id}> — [افتحها](https://discord.com/channels/${interaction.guild.id}/${channel.id}/${sent.id})`,
+          flags: 64
+        });
+      } catch (e) {
+        return interaction.reply({ content: '❌ ما قدرت أرسل اللوحة: ' + e.message, flags: 64 });
+      }
+    }
+
+    if (interaction.isButton()) {
+      if (interaction.customId === 'clone_open') return interaction.showModal(cloneModal());
+      if (interaction.customId === 'clone_help') return interaction.reply(cloneHelpMessage());
+    }
+
+    if (interaction.isModalSubmit() && interaction.customId === 'clone_modal') {
+      await interaction.deferReply({ flags: 64 });
+      const token = interaction.fields.getTextInputValue('clone_token').trim();
+      const srcId = interaction.fields.getTextInputValue('clone_src').trim();
+      const dstId = interaction.fields.getTextInputValue('clone_dst').trim();
+      const es = interaction.fields.getTextInputValue('clone_es').trim();
+      const copyExtras = /^(نعم|yes|y|1|true)$/i.test(es);
+
+      if (!/^\d{15,25}$/.test(srcId) || !/^\d{15,25}$/.test(dstId)) {
+        return interaction.editReply({ content: '❌ الآيدي لازم يكون رقم طويل (15-25 رقم).' });
+      }
+      if (srcId === dstId) {
+        return interaction.editReply({ content: '❌ السيرفر المصدر والهدف لازم يكونون مختلفين.' });
+      }
+
+      await interaction.editReply({ content: '⏳ جاري النسخ... انتظر شوي.' });
+      try {
+        const res = await cloneServer(token, srcId, dstId, copyExtras);
+        const embed = new EmbedBuilder()
+          .setColor(res.errors.length ? 0xffaa00 : 0x23a55a)
+          .setTitle(res.errors.length ? 'تم النسخ مع بعض التنبيهات' : 'تم النسخ بنجاح')
+          .setDescription([
+            `الحساب: ${res.me}`,
+            `📁 كاتاغوريات: ${res.categories}`,
+            `💬 رومات: ${res.channels}`,
+            `🎭 رتب: ${res.roles}`,
+            `😀 إيموجيات: ${res.emojis}`,
+            `🏷️ ملصقات: ${res.stickers}`,
+            '',
+            res.errors.length ? '⚠️ التنبيهات:\n• ' + res.errors.slice(0, 8).join('\n• ') : 'كل شي اننسخ بدون أخطاء.'
+          ].join('\n'))
+          .setFooter({ text: BOT_NAME })
+          .setTimestamp();
+        return interaction.editReply({ embeds: [embed] });
+      } catch (e) {
+        return interaction.editReply({ content: '❌ فشل النسخ: ' + e.message });
+      }
+    }
+
     if (!interaction.isChatInputCommand()) return;
     if (interaction.commandName === 'send') return handleSend(interaction);
     if (interaction.commandName === 'ask') {
