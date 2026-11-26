@@ -400,8 +400,8 @@ async function clonePanelMessage() {
   const panelImage = String(process.env.CLONE_PANEL_IMAGE_URL || '').trim();
   if (/^https:\/\//i.test(panelImage)) embed.setImage(panelImage);
   const row = new ActionRowBuilder().addComponents(
-    new ButtonBuilder().setCustomId('clone_open').setEmoji('📋').setStyle(ButtonStyle.Secondary),
-    new ButtonBuilder().setCustomId('clone_help').setEmoji('❓').setStyle(ButtonStyle.Secondary)
+    new ButtonBuilder().setCustomId('clone_open').setEmoji('<:copy971:1575640315526778972>').setStyle(ButtonStyle.Secondary),
+    new ButtonBuilder().setCustomId('clone_help').setEmoji('<:question971:1575640317334392942>').setStyle(ButtonStyle.Secondary)
   );
   return { embeds: [embed], components: [row] };
 }
