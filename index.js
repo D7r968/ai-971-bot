@@ -389,20 +389,19 @@ async function clonePanelMessage() {
   const iconUrl = guild?.iconURL({ size: 256 }) || CLONE_ICON_FALLBACK;
   const embed = new EmbedBuilder()
     .setColor(0x5865F2)
-    .setTitle('أداة نسخ سيرفر971 SERVER')
+    .setTitle('نسخ 971i SERVER')
     .setDescription(
       'تَستَخدم الاداه لنسخ أي سيرفر دسكورد تريده\n' +
       'قم بضغط الزر ادناه وقم بوضع توكن حسابك و ايدي السيرفر التي تريد نسخه وايدي السيرفر الخاص بك !'
     )
     .setThumbnail(iconUrl)
-    .setFooter({ text: BOT_NAME })
-    .setTimestamp();
+    .setFooter({ text: '971i' });
   // لو حطيت رابط الصورة/KFD الكامل هنا أو في المتغير البيئي، بينزل كصورة داخل الكرت
   const panelImage = String(process.env.CLONE_PANEL_IMAGE_URL || '').trim();
   if (/^https:\/\//i.test(panelImage)) embed.setImage(panelImage);
   const row = new ActionRowBuilder().addComponents(
-    new ButtonBuilder().setCustomId('clone_open').setLabel('نسخ سيرفر').setEmoji('📋').setStyle(ButtonStyle.Primary),
-    new ButtonBuilder().setCustomId('clone_help').setLabel('طريقة الاستخدام').setEmoji('❓').setStyle(ButtonStyle.Secondary)
+    new ButtonBuilder().setCustomId('clone_open').setEmoji('📋').setStyle(ButtonStyle.Secondary),
+    new ButtonBuilder().setCustomId('clone_help').setEmoji('❓').setStyle(ButtonStyle.Secondary)
   );
   return { embeds: [embed], components: [row] };
 }
