@@ -425,27 +425,25 @@ async function sendBoostThanks(msg) {
   if (boostSeen.has(msg.id)) return;
   rememberBoost(msg.id);
   const boosterId = msg.author?.id || msg.authorId;
-  if (!boosterId) return;
+  if (!boosterId || msg.author?.bot) return;
   try {
-    let target = msg;
-    if (typeof msg.reply !== 'function') {
-      const ch = await client.channels.fetch(BOOST_CHANNEL_ID);
-      if (!ch?.isTextBased()) return;
-      target = await ch.messages.fetch(msg.id);
-    }
+    // ديسكورد يمنع الرد على رسائل البوست (نظام)، فنرسل رسالة جديدة تحتها مباشرة
+    const ch = msg.channel?.isTextBased?.()
+      ? msg.channel
+      : await client.channels.fetch(BOOST_CHANNEL_ID);
+    if (!ch?.isTextBased()) return;
     const embed = new EmbedBuilder()
       .setColor(0x5865F2)
       .setDescription(`شكرا على البوست ي عسل <@${boosterId}> 💙`)
       .setFooter({ text: BOT_NAME })
       .setTimestamp();
-    await target.reply({
+    await ch.send({
       embeds: [embed],
-      allowedMentions: { parse: [], repliedUser: false },
-      failIfNotExists: false
+      allowedMentions: { parse: [] }
     });
     console.log(`[✓] شكر على البوست: ${boosterId}`);
   } catch (e) {
-    console.warn('[i] ما قدرت أرد على البوست:', e.message);
+    console.warn('[i] ما قدرت أرسل شكر البوست:', e.message);
   }
 }
 
