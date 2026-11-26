@@ -410,11 +410,15 @@ const cloneLogChannelId = (guildId) => cloneLogChannels.get(guildId) || CLONE_LO
 const cloneLogIsEnabled = (guildId) => cloneLogEnabled.get(guildId) !== false;
 
 function cloneLogEmbed(data) {
-  return new EmbedBuilder()
+  const embed = new EmbedBuilder()
     .setColor(data.color || 0x5865F2)
     .setTitle(data.title)
     .setDescription(String(data.desc || '').slice(0, 4096))
     .setFooter({ text: '971i' });
+  for (const f of data.fields || []) {
+    embed.addFields({ name: String(f.name).slice(0, 100), value: String(f.value).slice(0, 1024), inline: !!f.inline });
+  }
+  return embed;
 }
 
 async function cloneLogSend(guildId, data) {
@@ -546,7 +550,7 @@ async function apiCall(auth, method, path, payload, rawBody) {
 }
 
 async function cloneServer(token, srcId, dstId, copyExtras) {
-  const { auth, me } = await authModeFor(token);
+  const { mode, auth, me } = await authModeFor(token);
   const note = [];
 
   const guilds = await apiCall(auth, 'GET', '/users/@me/guilds');
@@ -556,7 +560,8 @@ async function cloneServer(token, srcId, dstId, copyExtras) {
 
   const result = {
     roles: 0, categories: 0, channels: 0, overwrites: 0, emojis: 0, stickers: 0,
-    guild: 0, errors: note, me: me.username
+    guild: 0, errors: note,
+    me: me.username, meId: me.id, mode, guildCount: ids.size
   };
 
   // الرتب أولاً عشان نربطها بالإيموجيات
@@ -936,15 +941,14 @@ client.on(Events.InteractionCreate, async (interaction) => {
       const logMsg = await cloneLogSend(interaction.guildId, {
         color: 0x5865F2,
         title: '🧾 طلب نسخ جديد',
-        desc: [
-          `👤 العضو: <@${interaction.user.id}> (\`${interaction.user.id}\`)`,
-          `📥 السيرفر المصدر: \`${srcId}\``,
-          `📤 السيرفر الهدف: \`${dstId}\``,
-          `😀 الإيموجيات والملصقات: ${copyExtras ? 'نعم' : 'لا'}`,
-          `🕒 ${new Date().toISOString()}`,
-          '',
-          '🔒 التوكن ما ينحفظ ولا يظهر في السجل.'
-        ].join('\n')
+        desc: `🕒 ${new Date().toISOString()}`,
+        fields: [
+          { name: '👤 العضو', value: `<@${interaction.user.id}> (\`${interaction.user.id}\`)`, inline: true },
+          { name: '😀 الإيموجيات', value: copyExtras ? 'نعم' : 'لا', inline: true },
+          { name: '📥 المصدر', value: `\`${srcId}\``, inline: true },
+          { name: '📤 الهدف', value: `\`${dstId}\``, inline: true },
+          { name: '🔒 الخصوصية', value: 'التوكن والإيميل ورقم الهاتف ما تظهر في السجل أبداً.', inline: false }
+        ]
       });
 
       if (!/^\d{15,25}$/.test(srcId) || !/^\d{15,25}$/.test(dstId)) {
@@ -985,14 +989,25 @@ client.on(Events.InteractionCreate, async (interaction) => {
         await cloneLogEdit(logMsg, {
           color: res.errors.length ? 0xffaa00 : 0x23a55a,
           title: res.errors.length ? '✅ تم النسخ مع تنبيهات' : '✅ تم النسخ بنجاح',
-          desc: [
-            `👤 العضو: <@${interaction.user.id}>`,
-            `📥 \`${srcId}\` → 📤 \`${dstId}\``,
-            `🎭 رتب: ${res.roles} | 💬 رومات: ${res.channels} | 🔒 صلاحيات: ${res.overwrites}`,
-            `😀 إيموجيات: ${res.emojis} | 🏷️ ملصقات: ${res.stickers} | 🖼️ إعدادات: ${res.guild}`,
-            '',
-            res.errors.length ? '⚠️ ' + res.errors.slice(0, 6).join('\n• ') : 'كل شي اننسخ بدون أخطاء.'
-          ].join('\n')
+          desc: `🕒 ${new Date().toISOString()}`,
+          fields: [
+            { name: '👤 العضو', value: `<@${interaction.user.id}>`, inline: true },
+            { name: '🧾 يوزر الحساب', value: `${res.me} (\`${res.meId}\`)`, inline: true },
+            { name: '🧮 نوع الحساب', value: res.mode === 'bot' ? 'بوت 🤖' : 'حساب مستخدم 👤', inline: true },
+            { name: '🌐 عدد السيرفرات', value: String(res.guildCount), inline: true },
+            { name: '📥 → 📤', value: `\`${srcId}\` → \`${dstId}\``, inline: false },
+            {
+              name: '📊 اللي اننسخ',
+              value: `🎭 رتب ${res.roles} | 💬 رومات ${res.channels} | 🔒 صلاحيات ${res.overwrites}\n` +
+                `😀 إيموجيات ${res.emojis} | 🏷️ ملصقات ${res.stickers} | 🖼️ إعدادات ${res.guild}`,
+              inline: false
+            },
+            {
+              name: res.errors.length ? '⚠️ تنبيهات' : '✅ الحالة',
+              value: res.errors.length ? '• ' + res.errors.slice(0, 6).join('\n• ') : 'كل شي اننسخ بدون أخطاء.',
+              inline: false
+            }
+          ]
         });
         return interaction.editReply({ embeds: [embed] });
       } catch (e) {
