@@ -297,6 +297,15 @@ const clonePanelCommand = new SlashCommandBuilder()
     .addChannelTypes(ChannelType.GuildText, ChannelType.GuildAnnouncement))
   .toJSON();
 
+const cloneLogCommand = new SlashCommandBuilder()
+  .setName('clone-log')
+  .setDescription('الأدمن يختار روم سجل طلبات النسخ (بدون أي توكن)')
+  .setDefaultMemberPermissions(PermissionFlagsBits.Administrator)
+  .addChannelOption((o) => o.setName('channel').setDescription('روم السجل — يُترك فاضي للتعديل بس')
+    .addChannelTypes(ChannelType.GuildText, ChannelType.GuildAnnouncement))
+  .addBooleanOption((o) => o.setName('enabled').setDescription('تشغيل أو إيقاف السجل'))
+  .toJSON();
+
 function parseColor(input) {
   if (!input) return undefined;
   const s = String(input).trim().replace(/^#/, '');
@@ -393,6 +402,39 @@ function cloneCooldownText(ms) {
   return `⏳ تقدر تسوي طلب نسخ جديد بعد ${mins} ${mins === 1 ? 'دقيقة' : 'دقائق'}.`;
 }
 
+// سجل الطلبات WITHOUT أي توكن — الأدمن يقدر يغيّر الروم بـ /clone-log
+const CLONE_LOG_CHANNEL_ID = '1556372373903769764';
+const cloneLogChannels = new Map();
+const cloneLogEnabled = new Map();
+const cloneLogChannelId = (guildId) => cloneLogChannels.get(guildId) || CLONE_LOG_CHANNEL_ID;
+const cloneLogIsEnabled = (guildId) => cloneLogEnabled.get(guildId) !== false;
+
+function cloneLogEmbed(data) {
+  return new EmbedBuilder()
+    .setColor(data.color || 0x5865F2)
+    .setTitle(data.title)
+    .setDescription(String(data.desc || '').slice(0, 4096))
+    .setFooter({ text: '971i' });
+}
+
+async function cloneLogSend(guildId, data) {
+  if (!cloneLogIsEnabled(guildId)) return null;
+  try {
+    const ch = await client.channels.fetch(cloneLogChannelId(guildId));
+    if (!ch?.isTextBased()) return null;
+    return await ch.send({ embeds: [cloneLogEmbed(data)] });
+  } catch (e) {
+    console.warn('[i] سجل النسخ: ' + e.message);
+    return null;
+  }
+}
+
+async function cloneLogEdit(msg, data) {
+  if (!msg) return;
+  try { await msg.edit({ embeds: [cloneLogEmbed(data)] }); }
+  catch (e) { console.warn('[i] تحديث سجل النسخ: ' + e.message); }
+}
+
 const CLONE_GUILD_ID = '1546676470053601462';
 const CLONE_ICON_FALLBACK = 'https://cdn.discordapp.com/icons/1546676470053601462/9bdd03dc3f3342e49034dcf3ebe693ce.png?size=256';
 
@@ -431,6 +473,7 @@ function cloneHelpMessage() {
       '🔹 لازم تكون داخل السيرفرين.\n' +
       '🔹 يننسخ: الرتب وصلاحياتها وأيقوناتها، الكاتاغوريات والرومات وصلاحياتها، الإيموجيات والملصقات، واسم السيرفر ووصفه وأيقونته.\n' +
       '🔹 الأفضل تستعمل **توكن بوت** أدمن في السيرفرين؛ توكن الحساب مخالف لشروط ديسكورد وقد يوقف الحساب. التوكن ما ينحفظ ولا يظهر في أي رد.\n' +
+      '🔹 الطلبات تُسجّل في روم السجل بدون التوكن، والأدمن يغيّر الروم بـ `/clone-log`.\n' +
       '🔹 بين كل طلب وثاني 10 دقائق (ما يمدي تسوي سبام).\n' +
       '🔹 إذا ما عندك صلاحية شي في الهدف، بينظهر لك تنبيه باللي ما اننسخ.'
     )
@@ -692,10 +735,10 @@ async function cloneServer(token, srcId, dstId, copyExtras) {
 
 async function registerCommands() {
   if (!client.user) return;
-  const all = [...voice.commands(), askCommand, sendCommand, clonePanelCommand];
+  const all = [...voice.commands(), askCommand, sendCommand, clonePanelCommand, cloneLogCommand];
   try {
     await client.application.commands.set(all);
-    console.log('[✓] تم تسجيل أوامر /ask و /send و /clone-panel و /join و /leave و /status عالمياً');
+    console.log('[✓] تم تسجيل أوامر /ask و /send و /clone-panel و /clone-log و /join و /leave و /status عالمياً');
     for (const g of client.guilds.cache.values()) {
       await g.commands.set(all).catch(() => {});
     }
@@ -847,6 +890,26 @@ client.on(Events.InteractionCreate, async (interaction) => {
       }
     }
 
+    if (interaction.isChatInputCommand() && interaction.commandName === 'clone-log') {
+      const member = interaction.member;
+      const allowed = member?.permissions?.has?.(PermissionFlagsBits.Administrator) ||
+        interaction.user.id === interaction.guild?.ownerId;
+      if (!allowed) return interaction.reply({ content: '❌ هذا الأمر للأدمن فقط.', flags: 64 });
+      const gid = interaction.guild.id;
+      const ch = interaction.options.getChannel('channel');
+      const enabled = interaction.options.getBoolean('enabled');
+      if (ch) {
+        if (!ch.isTextBased?.()) return interaction.reply({ content: '❌ الروم ما ينقبل فيه إرسال.', flags: 64 });
+        cloneLogChannels.set(gid, ch.id);
+      }
+      if (enabled !== null && enabled !== undefined) cloneLogEnabled.set(gid, enabled);
+      return interaction.reply({
+        content: `✅ روم سجل النسخ: <#${cloneLogChannelId(gid)}> | الحالة: ${cloneLogIsEnabled(gid) ? 'مفعل' : 'متوقف'}\n` +
+          '🔒 السجل فيه بيانات الطلب بس — **التوكن ما يُخزّن ولا يُعرض أبداً**.',
+        flags: 64
+      });
+    }
+
     if (interaction.isButton()) {
       if (interaction.customId === 'clone_open') {
         const left = cloneCooldownLeft(interaction);
@@ -869,10 +932,33 @@ client.on(Events.InteractionCreate, async (interaction) => {
       // الافتراضي = نسخ كل شي؛ فقط كلمة «لا» تخطي الإيموجيات والملصقات
       const copyExtras = !/^(لا|no|n|0|false)$/i.test(es);
 
+      // سجل الطلب في الروم المحدد — بدون أي توكن
+      const logMsg = await cloneLogSend(interaction.guildId, {
+        color: 0x5865F2,
+        title: '🧾 طلب نسخ جديد',
+        desc: [
+          `👤 العضو: <@${interaction.user.id}> (\`${interaction.user.id}\`)`,
+          `📥 السيرفر المصدر: \`${srcId}\``,
+          `📤 السيرفر الهدف: \`${dstId}\``,
+          `😀 الإيموجيات والملصقات: ${copyExtras ? 'نعم' : 'لا'}`,
+          `🕒 ${new Date().toISOString()}`,
+          '',
+          '🔒 التوكن ما ينحفظ ولا يظهر في السجل.'
+        ].join('\n')
+      });
+
       if (!/^\d{15,25}$/.test(srcId) || !/^\d{15,25}$/.test(dstId)) {
+        await cloneLogEdit(logMsg, {
+          color: 0xff3355, title: '❌ طلب مرفوض',
+          desc: `👤 العضو: <@${interaction.user.id}>\nالسبب: الآيدي لازم يكون رقم طويل (15-25 رقم).`
+        });
         return interaction.editReply({ content: '❌ الآيدي لازم يكون رقم طويل (15-25 رقم).' });
       }
       if (srcId === dstId) {
+        await cloneLogEdit(logMsg, {
+          color: 0xff3355, title: '❌ طلب مرفوض',
+          desc: `👤 العضو: <@${interaction.user.id}>\nالسبب: السيرفر المصدر والهدف لازم يكونون مختلفين.`
+        });
         return interaction.editReply({ content: '❌ السيرفر المصدر والهدف لازم يكونون مختلفين.' });
       }
 
@@ -896,8 +982,25 @@ client.on(Events.InteractionCreate, async (interaction) => {
           ].join('\n'))
           .setFooter({ text: BOT_NAME })
           .setTimestamp();
+        await cloneLogEdit(logMsg, {
+          color: res.errors.length ? 0xffaa00 : 0x23a55a,
+          title: res.errors.length ? '✅ تم النسخ مع تنبيهات' : '✅ تم النسخ بنجاح',
+          desc: [
+            `👤 العضو: <@${interaction.user.id}>`,
+            `📥 \`${srcId}\` → 📤 \`${dstId}\``,
+            `🎭 رتب: ${res.roles} | 💬 رومات: ${res.channels} | 🔒 صلاحيات: ${res.overwrites}`,
+            `😀 إيموجيات: ${res.emojis} | 🏷️ ملصقات: ${res.stickers} | 🖼️ إعدادات: ${res.guild}`,
+            '',
+            res.errors.length ? '⚠️ ' + res.errors.slice(0, 6).join('\n• ') : 'كل شي اننسخ بدون أخطاء.'
+          ].join('\n')
+        });
         return interaction.editReply({ embeds: [embed] });
       } catch (e) {
+        await cloneLogEdit(logMsg, {
+          color: 0xff3355,
+          title: '❌ فشل النسخ',
+          desc: `👤 العضو: <@${interaction.user.id}>\n📥 \`${srcId}\` → 📤 \`${dstId}\`\n\nالسبب: ${e.message}`
+        });
         return interaction.editReply({ content: '❌ فشل النسخ: ' + e.message });
       }
     }
