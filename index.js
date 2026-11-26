@@ -391,34 +391,79 @@ client.once(Events.ClientReady, async (c) => {
 
   await voice.restore();
   await refreshContexts();
+
+  // لا نرد على البوستات القديمة — بس الجديدة من بعد التشغيل
+  try {
+    const ch = await c.channels.fetch(BOOST_CHANNEL_ID);
+    if (ch?.isTextBased()) {
+      const old = await ch.messages.fetch({ limit: 50 });
+      for (const m of old.values()) rememberBoost(m.id);
+    }
+    console.log('[✓] روم البوست جاهز: ' + BOOST_CHANNEL_ID);
+  } catch (e) {
+    console.warn('[i] ما قدرت أقرأ روم البوست:', e.message);
+  }
+  setInterval(() => pollBoosts().catch(() => {}), 10000).unref();
+
   registerCommands();
 });
 
-/* ── شكر تلقائي على البوست (Server Boost) ── */
+/* ── شكر تلقائي على البوست (Server Boost) ──
+   ديسكورد أحياناً ما يرسل رسائل البوست للـ gateway، ففي فحص احتياطي بالـ REST كل 10 ثواني */
 const BOOST_CHANNEL_ID = '1573251981881905343';
 const BOOST_MESSAGE_TYPES = new Set([8, 9, 10, 11]); // UserPremiumGuildSubscription (+Tier1..3)
+const boostSeen = new Set();
 
-client.on(Events.MessageCreate, async (message) => {
-  if (!message.guild || message.channel.id !== BOOST_CHANNEL_ID) return;
-  if (!BOOST_MESSAGE_TYPES.has(message.type)) return;
-  const booster = message.author;
-  if (!booster || booster.bot) return;
+function rememberBoost(id) {
+  boostSeen.add(id);
+  if (boostSeen.size > 600) boostSeen.delete(boostSeen.values().next().value);
+}
+
+async function sendBoostThanks(msg) {
+  if (!msg) return;
+  if (!BOOST_MESSAGE_TYPES.has(Number(msg.type || 0))) return;
+  if (boostSeen.has(msg.id)) return;
+  rememberBoost(msg.id);
+  const boosterId = msg.author?.id || msg.authorId;
+  if (!boosterId) return;
   try {
+    let target = msg;
+    if (typeof msg.reply !== 'function') {
+      const ch = await client.channels.fetch(BOOST_CHANNEL_ID);
+      if (!ch?.isTextBased()) return;
+      target = await ch.messages.fetch(msg.id);
+    }
     const embed = new EmbedBuilder()
       .setColor(0x5865F2)
-      .setDescription(`شكرا على البوست ي عسل <@${booster.id}> 💙`)
+      .setDescription(`شكرا على البوست ي عسل <@${boosterId}> 💙`)
       .setFooter({ text: BOT_NAME })
       .setTimestamp();
-    await message.reply({
+    await target.reply({
       embeds: [embed],
       allowedMentions: { parse: [], repliedUser: false },
       failIfNotExists: false
     });
-    console.log(`[✓] شكر على البوست: ${booster.tag}`);
+    console.log(`[✓] شكر على البوست: ${boosterId}`);
   } catch (e) {
     console.warn('[i] ما قدرت أرد على البوست:', e.message);
   }
+}
+
+client.on(Events.MessageCreate, (message) => {
+  if (!message.guild || message.channelId !== BOOST_CHANNEL_ID) return;
+  sendBoostThanks(message).catch(() => {});
 });
+
+async function pollBoosts() {
+  try {
+    const ch = await client.channels.fetch(BOOST_CHANNEL_ID);
+    if (!ch?.isTextBased()) return;
+    const recent = await ch.messages.fetch({ limit: 25 });
+    for (const m of recent.values()) await sendBoostThanks(m);
+  } catch (e) {
+    console.warn('[i] فحص البوستات: ' + e.message);
+  }
+}
 
 client.on(Events.MessageCreate, async (message) => {
   if (message.author.bot) return;
