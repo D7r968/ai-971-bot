@@ -381,20 +381,25 @@ async function handleSend(interaction) {
 const DISCORD_API = 'https://discord.com/api/v10';
 const sleep = (ms) => new Promise((r) => setTimeout(r, ms));
 
-function clonePanelMessage() {
+const CLONE_GUILD_ID = '1546676470053601462';
+const CLONE_ICON_FALLBACK = 'https://cdn.discordapp.com/icons/1546676470053601462/9bdd03dc3f3342e49034dcf3ebe693ce.png?size=256';
+
+async function clonePanelMessage() {
+  const guild = client.guilds.cache.get(CLONE_GUILD_ID);
+  const iconUrl = guild?.iconURL({ size: 256 }) || CLONE_ICON_FALLBACK;
   const embed = new EmbedBuilder()
     .setColor(0x5865F2)
-    .setTitle('نسخ السيرفر')
+    .setTitle('أداة نسخ سيرفر971 SERVER')
     .setDescription(
-      'اضغط الزر واكتب بياناتك:\n' +
-      '• **Account Token** — توكن حسابك أنت.\n' +
-      '• **Server ID To Copy** — السيرفر اللي تبي تنسخه.\n' +
-      '• **Server ID To Paste** — السيرفر اللي تبي اللصق فيه.\n' +
-      '• **Clone Emojis & Stickers?** — اكتب `نعم` للنسخ، أو خلّه فاضي للنسخ السريع.\n\n' +
-      '⚠️ لازم تكون عضو في السيرفرين، وتكون عندك صلاحية إنشاء الرومات والرتب في الهدف.'
+      'تَستَخدم الاداه لنسخ أي سيرفر دسكورد تريده\n' +
+      'قم بضغط الزر ادناه وقم بوضع توكن حسابك و ايدي السيرفر التي تريد نسخه وايدي السيرفر الخاص بك !'
     )
+    .setThumbnail(iconUrl)
     .setFooter({ text: BOT_NAME })
     .setTimestamp();
+  // لو حطيت رابط الصورة/KFD الكامل هنا أو في المتغير البيئي، بينزل كصورة داخل الكرت
+  const panelImage = String(process.env.CLONE_PANEL_IMAGE_URL || '').trim();
+  if (/^https:\/\//i.test(panelImage)) embed.setImage(panelImage);
   const row = new ActionRowBuilder().addComponents(
     new ButtonBuilder().setCustomId('clone_open').setLabel('نسخ سيرفر').setEmoji('📋').setStyle(ButtonStyle.Primary),
     new ButtonBuilder().setCustomId('clone_help').setLabel('طريقة الاستخدام').setEmoji('❓').setStyle(ButtonStyle.Secondary)
@@ -735,7 +740,7 @@ client.on(Events.InteractionCreate, async (interaction) => {
         return interaction.reply({ content: '❌ الروم المحدد ما ينقبل فيه إرسال.', flags: 64 });
       }
       try {
-        const sent = await channel.send(clonePanelMessage());
+        const sent = await channel.send(await clonePanelMessage());
         return interaction.reply({
           content: `✅ انزلت لوحة النسخ في <#${channel.id}> — [افتحها](https://discord.com/channels/${interaction.guild.id}/${channel.id}/${sent.id})`,
           flags: 64
