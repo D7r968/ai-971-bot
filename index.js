@@ -807,7 +807,7 @@ async function sendBoostThanks(msg) {
     if (!ch?.isTextBased()) return;
     const embed = new EmbedBuilder()
       .setColor(0x5865F2)
-      .setDescription(`شكرا على البوست ي عسل <@${boosterId}> 💙`)
+      .setDescription(`فديتك على البوست انا <@${boosterId}> 💙`)
       .setFooter({ text: BOT_NAME })
       .setTimestamp();
     await ch.send({
