@@ -260,6 +260,7 @@ function ticketHint(guild) {
 const askCommand = new SlashCommandBuilder()
   .setName('ask')
   .setDescription('اسأل البوت الذكي أي سؤال')
+  .setDefaultMemberPermissions(PermissionFlagsBits.Administrator)
   .addStringOption((o) => o.setName('question').setDescription('سؤالك').setRequired(true))
   .toJSON();
 
@@ -873,6 +874,14 @@ client.on(Events.MessageCreate, async (message) => {
 
 client.on(Events.InteractionCreate, async (interaction) => {
   try {
+    // كل أوامر / مقتصرة على الأدمن (أي رتبة فيها صلاحية Administrator)
+    if (interaction.isChatInputCommand()) {
+      const allowed = interaction.member?.permissions?.has?.(PermissionFlagsBits.Administrator) ||
+        interaction.user.id === interaction.guild?.ownerId;
+      if (!allowed) {
+        return interaction.reply({ content: '❌ أوامر البوت للأدمن فقط.', flags: 64 });
+      }
+    }
     if (await voice.handle(interaction)) return;
 
     if (interaction.isChatInputCommand() && interaction.commandName === 'clone-panel') {
